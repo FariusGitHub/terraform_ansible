@@ -1,0 +1,253 @@
+#DEVELOP RESOURCE WITH ANSIBLE
+- name: Develop AWS Resources
+  hosts: localhost
+  vars:
+    access_key: "..."
+    secret_key: "..."
+
+  tasks:
+    - name: Create VPC
+      amazon.aws.ec2_vpc_net:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        cidr_block: 10.2.0.0/16
+        name: vpc-project2
+        tags:
+          Name: vpc-project2
+      register: vpc_project2
+
+    - name: Create Public Subnet
+      ec2_vpc_subnet:
+        vpc_id: "{{ vpc_project2.vpc.id }}"
+        cidr: 10.2.254.0/24
+        region: us-east-1
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        tags:
+          Name: pub-subnet
+      register: pub_subnet
+
+    - name: Create Private Subnet
+      ec2_vpc_subnet:
+        vpc_id: "{{ vpc_project2.vpc.id }}"
+        cidr: 10.2.2.0/24
+        region: us-east-1
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        tags:
+          Name: prv-subnet
+      register: prv_subnet
+
+    - name: Create AWS Internet Gateway
+      ec2_vpc_igw:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        vpc_id: "{{ vpc_project2.vpc.id }}"
+        tags:
+          Name: "igw-vpc-project2"
+      register: igw_vpc_project2
+
+    - name: Set route table
+      amazon.aws.ec2_vpc_route_table:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        vpc_id: "{{ vpc_project2.vpc.id }}"
+        region: us-east-1
+        tags:
+          Name: rt-pub-project2
+        subnets:
+          - "{{ pub_subnet.subnet.id }}"
+        routes:
+          - dest: 0.0.0.0/0
+            gateway_id: "{{ igw_vpc_project2.gateway_id }}"
+          - dest: ::/0
+            gateway_id: "{{ igw_vpc_project2.gateway_id }}"
+      register: rt_pub_project2
+
+    - name: security group
+      amazon.aws.ec2_security_group:
+        name: sg_api_project2
+        description: sg_api_project2
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        vpc_id: "{{ vpc_project2.vpc.id }}"
+        rules:
+          - proto: "tcp"
+            from_port: 80
+            to_port: 80
+            cidr_ip: 0.0.0.0/0
+          - proto: "tcp"
+            from_port: 443
+            to_port: 443
+            cidr_ip: 0.0.0.0/0
+          - proto: "tcp"
+            from_port: 22
+            to_port: 22
+            cidr_ip: 0.0.0.0/0
+          - proto: "tcp"
+            from_port: 3306
+            to_port: 3306
+            cidr_ip: 0.0.0.0/0
+          - proto: "tcp"
+            from_port: 5432
+            to_port: 5432
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: "-1"
+            from_port: 0
+            to_port: 0
+            cidr_ip: 0.0.0.0/0
+        tags:
+          Name: sg_api_project2
+      register: sg_api_project2
+
+    - name: security group
+      amazon.aws.ec2_security_group:
+        name: sg_pdb_project2
+        description: sg_pdb_project2
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        vpc_id: "{{ vpc_project2.vpc.id }}"
+        rules:
+          - proto: "-1"
+            from_port: 0
+            to_port: 0
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: "-1"
+            from_port: 0
+            to_port: 0
+            cidr_ip: 0.0.0.0/0
+        tags:
+          Name: sg_pdb_project2
+      register: sg_pdb_project2
+
+    - name: start database instance with no public IP address
+      amazon.aws.ec2_instance:
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        key_name: "wcd-projects"
+        vpc_subnet_id: "{{ prv_subnet.subnet.id }}"
+        instance_type: t2.micro
+        security_group: "{{ sg_pdb_project2.group_id }}"
+        network:
+          assign_public_ip: false
+        user_data: "{{ lookup('file', 'dbinstall.txt') }}"
+        image_id: ami-0fc5d935ebf8bc3bc
+        name: PRIVATEDB
+        tags:
+          Environment: PRIVATEDB
+      register: PRIVATEDB
+
+    - name: create launch template
+      community.aws.ec2_launch_template:
+        name: EC2_template_project2
+        image_id: ami-0fc5d935ebf8bc3bc
+        key_name: wcd-projects
+        instance_type: t2.micro
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        network_interfaces:
+          - associate_public_ip_address: true
+            subnet_id: "{{ pub_subnet.subnet.id }}"
+        user_data: "{{ lookup('file', 'apiinstall.sh') | b64encode }}"
+      register: EC2_template_project2
+
+    - amazon.aws.autoscaling_group:
+        name: AutoScaled_API_project2
+        health_check_type: ELB
+        aws_access_key: "{{ aws_access_key }}"
+        aws_secret_key: "{{ aws_secret_key }}"
+        region: us-east-1
+        launch_template:
+            version: '1'
+            launch_template_name: 'EC2_template_project2'
+        min_size: 2
+        max_size: 2
+        desired_capacity: 2
+        vpc_zone_identifier: [ "{{ pub_subnet.subnet.id }}"]
+        tags:
+         -  key: Name
+            value: PUB_API
+            propagate_at_launch: true
+
+# #DESTROY AWS RESOURCE WITH ANSIBLE (NEED TO DELETE INSTANCE MANUALLY)
+# - name: Destroy AWS Resources
+#   hosts: localhost
+
+#   tasks:
+
+#     - name: Delete instances
+#       ec2_instance:
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+#         region: us-east-1
+#         # instance_ids: "{{ PRIVATEDB.instance_ids }}"
+#         state: absent
+
+#     - name: "Delete security group by its id"
+#       amazon.aws.ec2_security_group:
+#         group_id: "{{sg_pdb_project2.group_id}}"
+#         state: absent
+#         region: us-east-1
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+
+#     - name: "Delete security group by its id"
+#       amazon.aws.ec2_security_group:
+#         group_id: "{{sg_api_project2.group_id}}"
+#         state: absent
+#         region: us-east-1
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"        
+
+#     - name: delete route table
+#       amazon.aws.ec2_vpc_route_table:
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+#         vpc_id: "{{ vpc_project2.vpc.id }}"
+#         region: us-east-1
+#         route_table_id: "{{rt_pub_project2.route_table.id }}"
+#         lookup: id
+#         state: absent
+
+#     - name: Delete Internet gateway with gateway id
+#       amazon.aws.ec2_vpc_igw:
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+#         region: us-east-1
+#         state: absent
+#         internet_gateway_id: "{{ igw_vpc_project2.gateway_id }}"
+
+#     - name: Remove public subnet
+#       amazon.aws.ec2_vpc_subnet:
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+#         region: us-east-1
+#         state: absent
+#         vpc_id: "{{ vpc_project2.vpc.id }}"
+#         cidr: 10.2.254.0/24        
+
+#     - name: Remove private subnet
+#       amazon.aws.ec2_vpc_subnet:
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+#         region: us-east-1
+#         state: absent
+#         vpc_id: "{{ vpc_project2.vpc.id }}"
+#         cidr: 10.2.2.0/24            
+
+#     - name: Delete vpc
+#       amazon.aws.ec2_vpc_net:
+#         access_key: "{{ access_key }}"
+#         secret_key: "{{ secret_key }}"
+#         region: us-east-1
+#         state: absent
+#         vpc_id: "{{ vpc_project2.vpc.id }}"         
+

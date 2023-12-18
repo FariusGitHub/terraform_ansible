@@ -1,0 +1,12 @@
+#!/bin/bash
+aws ec2 create-tags \
+--resources $(aws ec2 describe-instances \
+--filters 'Name=tag:Name,Values=PUB_API' 'Name=instance-state-name,Values=running' \
+--query 'Reservations[].Instances[].InstanceId' | awk 'NR==2' | cut -d'"' -f2) \
+--tags Key=Name,Value=PUB_API_1 && \
+
+aws ec2 create-tags \
+--resources $(aws ec2 describe-instances \
+--filters 'Name=tag:Name,Values=PUB_API' 'Name=instance-state-name,Values=running' \
+--query 'Reservations[].Instances[].InstanceId' | awk 'NR==2' | cut -d'"' -f2) \
+--tags Key=Name,Value=PUB_API_2
